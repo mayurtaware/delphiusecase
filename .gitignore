@@ -1,0 +1,84 @@
+# .gitignore for Terraform Files
+
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Exclude all .tfvars files, which are likely to contain sensitive data
+terraform.dev.tfvars
+terraform.staging.tfvars
+# *.tfvars.json
+# !terraform.prod.tfvars.example
+# !terraform.staging.tfvars.example
+
+# Ignore override files, as they are usually used to override resources locally
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Include override files you do wish to add to version control using negated pattern
+# !example_override.tf
+
+# Include terraform variables files you do wish to add to version control using negated pattern
+# !example.tfvars
+
+# Ignore CLI configuration files
+.terraformrc
+terraform.rc
+
+# Ignore plan files
+*.tfplan
+tfplan
+
+# Ignore lock files (optional, but recommended for team environments)
+# .terraform.lock.hcl
+
+# Ignore cache
+.terraform.d/
+
+# Ignore logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Azure
+.env.local
+*.azureauth
+
+# Kubernetes
+kubeconfig
+kube_config*
+*.kubeconfig
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# State backups
+*.tfstate.backup
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Outputs
+outputs.json
+tfplan.out
