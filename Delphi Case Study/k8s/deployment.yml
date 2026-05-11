@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: delphi-api
+  namespace: delphi
+  labels:
+    app: delphi-api
+    environment: prod
+    version: "1.0"
+spec:
+  replicas: 1                 
+  selector:
+    matchLabels:
+      app: delphi-api
+  template:
+    metadata:
+      labels:
+        app: delphi-api
+        environment: prod
+    spec:
+      # Pull image from your private ACR
+      # No imagePullSecrets needed - AKS kubelet identity has AcrPull role assigned in Terraform
+      containers:
+        - name: delphi-api
+          image: proddelphi-app-registry.azurecr.io/delphi-api:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 80
+              name: http
+
+          env:
+            - name: ASPNETCORE_ENVIRONMENT
+              value: "Production"
+            - name: WEBSITES_PORT
+              value: "80"
+            
+
+          resources:
+            requests:
+              cpu: "250m"      
+              memory: "256Mi"
+            limits:
+              cpu: "500m"     
+              memory: "512Mi"
+
+        
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health/live
+              port: 80
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          volumeMounts:
+            - name: delphi-storage
+              mountPath: /app/data
+            - name: kv-secrets
+              mountPath: /mnt/secrets
+              readOnly: true
+
+      volumes:
+        - name: delphi-storage
+          persistentVolumeClaim:
+            claimName: delphi-pvc
+        - name: kv-secrets
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: delphi-kv-secrets
+
+      
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: delphi-api

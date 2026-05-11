@@ -1,0 +1,36 @@
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: delphi-storage
+  labels:
+    environment: prod
+provisioner: disk.csi.azure.com
+parameters:
+  skuName: Premium_LRS       
+  kind: Managed
+  cachingMode: ReadOnly
+allowVolumeExpansion: true
+reclaimPolicy: Retain         
+volumeBindingMode: WaitForFirstConsumer  
+allowedTopologies:
+  - matchLabelExpressions:
+      - key: topology.kubernetes.io/zone
+        values:
+          - uaenorth-1      
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: delphi-pvc
+  namespace: delphi
+  labels:
+    environment: prod
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: delphi-storage
+  resources:
+    requests:
+      storage: 10Gi

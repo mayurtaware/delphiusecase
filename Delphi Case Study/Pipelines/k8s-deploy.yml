@@ -1,0 +1,165 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - k8s/**
+
+pr: none   
+
+pool:
+  name: 'agent-pool-prod'   
+
+variables:
+  # Matches terraform.tfvars
+  aksClusterName: 'prod-aks-cluster'        
+  resourceGroupName: 'rg-delphi-prod'         
+  acrName: 'proddelphi-app-registry.azurecr.io' 
+  imageRepository: 'delphi-api'
+  azureSubscription: 'Azure-Subscription'    
+  namespace: 'delphi'
+  tag: $(Build.BuildId)
+
+stages:
+  - stage: Validate
+    displayName: 'Validate Manifests'
+    jobs:
+      - job: Validate
+        displayName: 'Dry Run Manifests'
+        steps:
+          - checkout: self
+            displayName: 'Checkout Code'
+
+          - task: AzureCLI@2
+            displayName: 'Get AKS Credentials'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks get-credentials \
+                  --resource-group $(resourceGroupName) \
+                  --name $(aksClusterName) \
+                  --overwrite-existing
+
+          - task: Bash@3
+            displayName: 'Dry Run kubectl apply'
+            inputs:
+              targetType: 'inline'
+              script: |
+                kubectl apply \
+                  --dry-run=client \
+                  -f k8s/namespace.yaml \
+                  -f k8s/secrets.yaml \
+                  -f k8s/storage.yaml \
+                  -f k8s/deployment.yaml \
+                  -f k8s/service.yaml \
+                  -f k8s/ingress.yaml \
+                  -f k8s/hpa.yaml
+
+  - stage: Deploy
+    displayName: 'Deploy to AKS'
+    dependsOn: Validate
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployToAKS
+        displayName: 'Apply Kubernetes Manifests'
+        environment: 'Production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: 'Checkout Code'
+
+                - task: AzureCLI@2
+                  displayName: 'Get AKS Credentials'
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    scriptType: 'bash'
+                    scriptLocation: 'inlineScript'
+                    inlineScript: |
+                      az aks get-credentials \
+                        --resource-group $(resourceGroupName) \
+                        --name $(aksClusterName) \
+                        --overwrite-existing
+
+                - task: Bash@3
+                  displayName: 'Update Image Tag'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      # Replace latest tag with exact build ID for traceability
+                      sed -i "s|delphi-api:latest|delphi-api:$(tag)|g" k8s/deployment.yaml
+
+                - task: Bash@3
+                  displayName: 'Apply Manifests'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      # Apply in order - namespace first, then dependencies, then app
+                      kubectl apply -f k8s/namespace.yaml
+                      kubectl apply -f k8s/secrets.yaml
+                      kubectl apply -f k8s/storage.yaml
+                      kubectl apply -f k8s/deployment.yaml
+                      kubectl apply -f k8s/service.yaml
+                      kubectl apply -f k8s/ingress.yaml
+                      kubectl apply -f k8s/hpa.yaml
+
+                - task: Bash@3
+                  displayName: 'Verify Rollout'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      kubectl rollout status deployment/delphi-api \
+                        --namespace $(namespace) \
+                        --timeout=5m
+
+                - task: Bash@3
+                  displayName: 'Post-Deploy Summary'
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      echo "========================================="
+                      echo "✓ Kubernetes Deployment Completed"
+                      echo "========================================="
+                      echo "Cluster:     $(aksClusterName)"
+                      echo "Namespace:   $(namespace)"
+                      echo "Image:       $(acrName)/$(imageRepository):$(tag)"
+                      echo "Build ID:    $(Build.BuildId)"
+                      echo "Branch:      $(Build.SourceBranch)"
+                      echo "========================================="
+                      kubectl get pods -n $(namespace)
+                      kubectl get svc -n $(namespace)
+
+  - stage: Rollback
+    displayName: 'Rollback if Failed'
+    dependsOn: Deploy
+    condition: failed()
+    jobs:
+      - job: Rollback
+        displayName: 'Rollback Deployment'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Get AKS Credentials'
+            inputs:
+              azureSubscription: $(azureSubscription)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az aks get-credentials \
+                  --resource-group $(resourceGroupName) \
+                  --name $(aksClusterName) \
+                  --overwrite-existing
+
+          - task: Bash@3
+            displayName: 'Rollback to Previous Version'
+            inputs:
+              targetType: 'inline'
+              script: |
+                kubectl rollout undo deployment/delphi-api \
+                  --namespace $(namespace)
+                kubectl rollout status deployment/delphi-api \
+                  --namespace $(namespace) \
+                  --timeout=5m

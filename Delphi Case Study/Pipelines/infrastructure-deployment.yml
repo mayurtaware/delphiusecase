@@ -1,0 +1,179 @@
+trigger:
+  branches:
+    include:
+      - main
+      - Test01
+
+  paths:
+    include:
+      - Infrastructure/terraform/**
+    exclude:
+      - README.md
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - Infrastructure/terraform/**
+
+pool:
+  name: 'agent-pool-prod'
+  #vmImage: 'ubuntu-latest'
+
+variables:
+  terraformVersion: '1.5.0'
+  terraformWorkingDirectory: '$(System.DefaultWorkingDirectory)/Infrastructure/terraform'
+  environment: 'prod'
+  azureSubscription: 'Azure-Subscription' # Update with your service connection name
+  resourceGroupName: 'rg-terraform-state'
+
+stages:
+  # Stage 1: Validate Terraform Configuration
+  - stage: Validate
+    displayName: 'Validate Terraform Configuration'
+    jobs:
+      - job: TerraformValidate
+        displayName: 'Validate Terraform'
+        steps:
+          - checkout: self
+
+          - task: TerraformInstaller@0
+            inputs:
+              terraformVersion: $(terraformVersion)
+            displayName: 'Install Terraform'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: '$(terraformWorkingDirectory)'
+              backendServiceArm: 'Azure-Subscription'
+              backendAzureRmResourceGroupName: '$(resourceGroupName)'
+              backendAzureRmStorageAccountName: 'deltfstatestorageaccount'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: '$(environment).terraform.tfstate'
+            displayName: 'Terraform Init'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'azurerm'
+              command: 'validate'
+              workingDirectory: $(terraformWorkingDirectory)
+            displayName: 'Terraform Validate'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'azurerm'
+              command: 'plan'
+              workingDirectory: '$(terraformWorkingDirectory)'
+              commandOptions: '-var-file=terraform.tfvars -out=tfplan'
+              environmentServiceNameAzureRM: 'Azure-Subscription'
+            displayName: 'Terraform Plan'
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: $(terraformWorkingDirectory)
+              artifactName: 'terraform-plan'
+            displayName: 'Publish Terraform Plan'
+
+  # Stage 2: Security Scan
+  - stage: SecurityScan
+    displayName: 'Security Scan'
+    condition: succeeded()
+    jobs:
+      - job: TFSecScan
+        displayName: 'TFSec Security Scan'
+        steps:
+          - checkout: self
+
+          - task: Bash@3
+            inputs:
+              targetType: 'inline'
+              script: |
+                # Install tfsec
+                wget https://github.com/aquasecurity/tfsec/releases/download/v1.28.0/tfsec-linux-amd64
+                chmod +x tfsec-linux-amd64
+                ./tfsec-linux-amd64 $(terraformWorkingDirectory) -f json > $(Build.ArtifactStagingDirectory)/tfsec-results.json
+                cat $(Build.ArtifactStagingDirectory)/tfsec-results.json
+            displayName: 'Run TFSec'
+            continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              ArtifactName: 'tfsec-report'
+            condition: always()
+            displayName: 'Publish Security Report'
+
+  # Stage 3: Deploy to Production
+  - stage: Deploy
+    displayName: 'Deploy to Production'
+    #condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/Test01'), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - deployment: DeployTerraform
+        displayName: 'Deploy Terraform Infrastructure'
+        environment: 'Production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+
+                - task: TerraformInstaller@0
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+                  displayName: 'Install Terraform'
+
+                - task: TerraformTaskV4@4
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'init'
+                    workingDirectory: '$(terraformWorkingDirectory)'
+                    backendServiceArm: 'Azure-Subscription'
+                    backendAzureRmResourceGroupName: '$(resourceGroupName)'
+                    backendAzureRmStorageAccountName: 'deltfstatestorageaccount'
+                    backendAzureRmContainerName: 'tfstate'
+                    backendAzureRmKey: '$(environment).terraform.tfstate'
+                  displayName: 'Terraform Init'
+
+                - task: TerraformTaskV4@4
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'plan'
+                    workingDirectory: '$(terraformWorkingDirectory)'
+                    commandOptions: '-var-file=terraform.tfvars -out=tfplan'
+                    environmentServiceNameAzureRM: 'Azure-Subscription'
+                  displayName: 'Terraform Plan'
+
+                - task: TerraformTaskV4@4
+                  inputs:
+                    provider: 'azurerm'
+                    command: 'apply'
+                    workingDirectory: '$(terraformWorkingDirectory)'
+                    commandOptions: 'tfplan'
+                    environmentServiceNameAzureRM: 'Azure-Subscription'
+                  displayName: 'Terraform Apply'
+
+                - task: Bash@3
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      cd $(terraformWorkingDirectory)
+                      terraform output -json > outputs.json
+                      cat outputs.json
+                  displayName: 'Export Terraform Outputs'
+
+                - task: PublishBuildArtifacts@1
+                  inputs:
+                    PathtoPublish: '$(terraformWorkingDirectory)/outputs.json'
+                    ArtifactName: 'terraform-outputs'
+                  displayName: 'Publish Outputs'
+
+                - task: Bash@3
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      echo "✓ Infrastructure deployment completed successfully!"
+                  displayName: 'Deployment Summary'

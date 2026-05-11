@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: delphi-api
+  namespace: delphi
+  labels:
+    app: delphi-api
+    environment: prod
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "prod-aks-subnet"
+spec:
+  type: LoadBalancer
+  selector:
+    app: delphi-api
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80

@@ -1,0 +1,177 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - src/**
+    exclude:
+      - README.md
+      - Pipelines/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/**
+
+pool:
+  name: 'agent-pool-prod'
+
+variables:
+  dotnetVersion: '8.0.x'
+  buildConfiguration: 'Release'
+  azureSubscription: 'Azure-Subscription'
+  prodAppServiceName: 'prod-delphi-app-service'
+  prodResourceGroupName: 'rg-delphi-prod'
+
+stages:
+  # Stage 1: Build, Test, and Publish .NET Application
+  - stage: Build
+    displayName: 'Build .NET Application'
+    jobs:
+      - job: BuildAndPublish
+        displayName: 'Build, Test and Publish'
+        steps:
+          - checkout: self
+            displayName: 'Checkout Code'
+
+          - task: UseDotNet@2
+            inputs:
+              version: $(dotnetVersion)
+              packageType: 'sdk'
+            displayName: 'Install .NET SDK 8.0'
+
+          - task: DotNetCoreCLI@2
+            inputs:
+              command: 'restore'
+              projects: 'src/DemoApp.csproj'
+            displayName: 'Restore NuGet Packages'
+
+          - task: DotNetCoreCLI@2
+            inputs:
+              command: 'build'
+              projects: 'src/DemoApp.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-restore'
+            displayName: 'Build Application'
+
+          - task: DotNetCoreCLI@2
+            inputs:
+              command: 'test'
+              projects: 'src/**/*Tests.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-build --collect:"XPlat Code Coverage"'
+              publishTestResults: true
+            displayName: 'Run Unit Tests'
+
+
+          - task: PublishCodeCoverageResults@1
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: '$(Agent.TempDirectory)/**/coverage.cobertura.xml'
+            displayName: 'Publish Code Coverage Results'
+
+          - task: DotNetCoreCLI@2
+            inputs:
+              command: 'publish'
+              publishWebProjects: false
+              projects: 'src/DemoApp.csproj'
+              arguments: '--configuration $(buildConfiguration) --no-build -o $(Build.ArtifactStagingDirectory)/publish'
+              zipAfterPublish: false
+            displayName: 'Publish Application'
+
+          - task: ArchiveFiles@2
+            inputs:
+              rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/publish'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/app.zip'
+              replaceExistingArchive: true
+            displayName: 'Create Deployment Package'
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: '$(Build.ArtifactStagingDirectory)/app.zip'
+              ArtifactName: 'drop'
+              publishLocation: 'Container'
+            displayName: 'Publish Deployment Package'
+
+  # Stage 2: Deploy to Production
+  - stage: DeployProduction
+    displayName: 'Deploy to Production'
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: DeployToProduction
+        displayName: 'Deploy to Production App Service'
+        environment: 'Production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                  displayName: 'Checkout Code'
+
+                - task: DownloadBuildArtifacts@0
+                  inputs:
+                    buildType: 'current'
+                    downloadType: 'single'
+                    artifactName: 'drop'
+                    downloadPath: '$(Pipeline.Workspace)'
+                  displayName: 'Download Build Artifacts'
+
+                - task: AzureAppServiceSettings@1
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    appName: $(prodAppServiceName)
+                    resourceGroupName: $(prodResourceGroupName)
+                    appSettings: |
+                      [
+                        {
+                          "name": "ASPNETCORE_ENVIRONMENT",
+                          "value": "Production",
+                          "slotSetting": false
+                        },
+                        {
+                          "name": "WEBSITES_ENABLE_APP_SERVICE_STORAGE",
+                          "value": "false",
+                          "slotSetting": false
+                        }
+                      ]
+                  displayName: 'Configure App Service Settings'
+
+                - task: AzureRmWebAppDeployment@4
+                  inputs:
+                    connectionType: 'AzureRM'
+                    azureSubscription: $(azureSubscription)
+                    appType: 'webAppLinux'
+                    appName: $(prodAppServiceName)
+                    resourceGroupName: $(prodResourceGroupName)
+                    deployToSlotOrASE: false
+                    package: '$(Pipeline.Workspace)/drop/app.zip'
+                    runtimeStack: 'DOTNETCORE|8.0'
+                  displayName: 'Deploy to Production App Service'
+
+                - task: AzureAppServiceManage@0
+                  inputs:
+                    azureSubscription: $(azureSubscription)
+                    Action: 'Start Azure App Service'
+                    WebAppName: $(prodAppServiceName)
+                    ResourceGroupName: $(prodResourceGroupName)
+                  displayName: 'Start Production App Service'
+
+                - task: Bash@3
+                  inputs:
+                    targetType: 'inline'
+                    script: |
+                      echo "========================================="
+                      echo "✓ Production Deployment Completed"
+                      echo "========================================="
+                      echo "App Service: $(prodAppServiceName)"
+                      echo "Environment: Production"
+                      echo "Build ID: $(Build.BuildId)"
+                      echo "Source Branch: $(Build.SourceBranch)"
+                      echo "Source Version: $(Build.SourceVersion)"
+                      echo "========================================="
+                  displayName: 'Post-Deployment Summary'

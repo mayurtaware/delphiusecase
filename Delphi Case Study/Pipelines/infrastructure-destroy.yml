@@ -1,0 +1,67 @@
+trigger: none
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  terraformVersion: '1.5.0'
+  terraformWorkingDirectory: '$(System.DefaultWorkingDirectory)/Infrastructure/terraform'
+  azureSubscription: 'Azure-Subscription'
+  resourceGroupName: 'rg-delphi-prod'
+
+stages:
+  - stage: Destroy
+    displayName: 'Destroy Infrastructure (Caution!)'
+    jobs:
+      - job: GateCheck
+        displayName: 'Manual Gate - Confirm Destruction'
+        pool: server
+        steps:
+          - task: ManualValidation@0
+            inputs:
+              notifyUsers: 'devops-team@company.com'
+              instructions: 'This will destroy all infrastructure. Please review and confirm.'
+            displayName: 'Manual Approval Required'
+
+      - job: DestroyResources
+        displayName: 'Destroy Terraform Resources'
+        dependsOn: GateCheck
+        steps:
+          - checkout: self
+
+          - task: TerraformInstaller@0
+            inputs:
+              terraformVersion: $(terraformVersion)
+            displayName: 'Install Terraform'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'azurerm'
+              command: 'init'
+              workingDirectory: $(terraformWorkingDirectory)
+              backendServiceArm: $(azureSubscription)
+              backendAzureRmResourceGroupName: $(resourceGroupName)
+              backendAzureRmStorageAccountName: 'tfstateaccount'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'prod.tfstate'
+            displayName: 'Terraform Init'
+
+          - task: TerraformTaskV4@4
+            inputs:
+              provider: 'azurm'
+              command: 'destroy'
+              workingDirectory: $(terraformWorkingDirectory)
+              commandOptions: '-var-file=terraform.tfvars -auto-approve'
+              backendServiceArm: $(azureSubscription)
+              backendAzureRmResourceGroupName: $(resourceGroupName)
+              backendAzureRmStorageAccountName: 'tfstateaccount'
+              backendAzureRmContainerName: 'tfstate'
+              backendAzureRmKey: 'prod.tfstate'
+            displayName: 'Terraform Destroy'
+
+          - task: Bash@3
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "✗ Infrastructure destroyed successfully!"
+            displayName: 'Destruction Summary'
